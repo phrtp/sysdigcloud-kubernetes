@@ -1,25 +1,94 @@
 #!/bin/bash
-
 set -euo pipefail
 
 #generate sysdigcloud support bundle on kubernetes
-NAMESPACE=${1:-sysdigcloud}
-CONTEXT=${2:-}
 
-if [[ -z ${CONTEXT} ]] ; then
-    context=""
-else
-    context="--context ${CONTEXT}"
+NAMESPACE=${1:-sysdigcloud}
+LABELS=""
+LOG_DIR=$(mktemp -d sysdigcloud-support-bundle-XXXX)
+
+while getopts l:n:hced flag; do
+  case "${flag}" in
+    l) LABELS=${OPTARG:-};;
+    n) NAMESPACE=${OPTARG:-sysdigcloud};;
+    h) 
+
+      echo "Usage: ./get_support_bundle.sh -n <NAMESPACE> -l <LABELS>"; printf "\n"; 
+      echo "Example: ./get_support_bundle.sh -n sysdig -l api,collector,worker,cassandra,elasticsearch"; printf "\n"; 
+      echo "Flags:"; printf "\n"
+      echo "-n  Specify the Sysdig namespace. If not specified, "sysdigcloud" is assumed."; printf "\n";
+      echo "-c  Include Cassandra storage information"; printf "\n";
+      echo "-e  Include Elasticsearch storage information"; printf "\n";
+      echo "-d  Include container density information"; printf "\n";     
+      exit;;
+
+    c) echo "Fetching Cassandra storage info";
+
+      # Executes a df -h in Cassandra pod, gets proxyhistograms, tpstats, and compactionstats
+
+      printf "Pod#\tFilesystem\tSize\tUsed\tAvail\tUse\tMounted on\n" > ${LOG_DIR}/cassandra_storage.log
+      for pod in $(kubectl get pods -l role=cassandra -n ${NAMESPACE} | grep -v "NAME" | awk '{print $1}')
+      do
+        #printf "$pod\t" > ${LOG_DIR}/cassandra_storage.log
+        kubectl exec -it $pod -n ${NAMESPACE} -- df -Ph | grep cassandra | grep -v "tmpfs" | awk '{printf "%-13s %10s %6s %8s %6s %s\n",$1,$2,$3,$4,$5,$6}' > ${LOG_DIR}/cassandra_storage.log
+      done
+
+      for pod in $(kubectl get pods -l role=cassandra -n sysdig | grep -v "NAME" | awk '{print $1}'); do echo $pod; for cmd in proxyhistograms status tpstats compactionstats; do kubectl exec $pod -c cassandra -n sysdig -- nodetool $cmd > ${LOG_DIR}/cassandra_nodes_output.log;
+      done; done;;
+
+    e) echo "Fetching Elasticsearch storage info";
+
+      printf "Pod#\tFilesystem\tSize\tUsed\tAvail\tUse\tMounted on\n" |tee -a elasticsearch_storage.log
+      for pod in $(kubectl get pods -l role=elasticsearch -n ${NAMESPACE} | grep -v "NAME" | awk '{print $1}')
+      do
+        printf "$pod\t" |tee -a elasticsearch_storage.log
+        kubectl exec -it $pod -n ${NAMESPACE} -- df -Ph | grep elasticsearch | grep -v "tmpfs" | awk '{printf "%-13s %10s %6s %8s %6s %s\n",$1,$2,$3,$4,$5,$6}' |tee -a elasticsearch_storage.log
+      done;;
+
+    d) echo "Fetching container density";
+
+      num_nodes=0
+      num_pods=0
+      num_running_containers=0
+      num_total_containers=0
+
+	printf "%-30s %-10s %-10s %-10s %-10s\n" "Node" "Pods" "Running Containers" "Total Containers" >> ${LOG_DIR}/container_density.txt
+	for node in $(kubectl get nodes --no-headers -o custom-columns=node:.metadata.name); do
+		total_pods=$(kubectl get pods -A --no-headers -o wide | grep ${node} |wc -l |xargs)
+			running_containers=$( kubectl get pods -A --no-headers -o wide |grep ${node} |awk '{print $3}' |cut -f 1 -d/ | awk '{ SUM += $1} END { print SUM }' |xargs)
+			total_containers=$( kubectl get pods -A --no-headers -o wide |grep ${node} |awk '{print $3}' |cut -f 2 -d/ | awk '{ SUM += $1} END { print SUM }' |xargs)
+			printf "%-30s %-15s %-20s %-10s\n" "${node}" "${total_pods}" "${running_containers}" "${total_containers}" >> ${LOG_DIR}/container_density.txt
+			num_nodes=$((num_nodes+1))
+			num_pods=$((num_pods+${total_pods}))
+			num_running_containers=$((num_running_containers+${running_containers}))
+			num_total_containers=$((num_total_containers+${total_containers}))
+	done
+
+	printf "\nTotals\n-----\n" >> ${LOG_DIR}/container_density.txt
+	printf "Nodes: ${num_nodes}\n" >> ${LOG_DIR}/container_density.txt
+	printf "Pods: ${num_pods}\n" >> ${LOG_DIR}/container_density.txt
+	printf "Running Containers: ${num_running_containers}\n" >> ${LOG_DIR}/container_density.txt
+	printf "Containers: ${num_total_containers}\n" >> ${LOG_DIR}/container_density.txt
+
+    
+  esac
+done
+
+if [[ -z ${NAMESPACE} ]]; then
+  NAMESPACE=sysdigcloud
 fi
 
 #verify that the provided namespace exists
-kubectl ${context} get namespace ${NAMESPACE} > /dev/null
+kubectl get namespace ${NAMESPACE} > /dev/null
 
-KUBE_OPTS="--namespace ${NAMESPACE} ${context}"
+KUBE_OPTS="--namespace ${NAMESPACE}"
 
-LOG_DIR=$(mktemp -d sysdigcloud-support-bundle-XXXX)
 
-SYSDIGCLOUD_PODS=$(kubectl ${KUBE_OPTS} get pods | awk '{ print $1 }' | grep -v NAME)
+if [[ -z ${LABELS} ]]; then
+  SYSDIGCLOUD_PODS=$(kubectl ${KUBE_OPTS} get pods | awk '{ print $1 }' | grep -v NAME)
+else
+  SYSDIGCLOUD_PODS=$(kubectl ${KUBE_OPTS} -l "role in (${LABELS})" get pods | awk '{ print $1 }' | grep -v NAME)
+fi
 
 command='tar czf - /logs/ /opt/draios/ /var/log/sysdigcloud/ /var/log/cassandra/ /tmp/redis.log /var/log/redis-server/redis.log /var/log/mysql/error.log /opt/prod.conf 2>/dev/null || true'
 for pod in ${SYSDIGCLOUD_PODS}; do
