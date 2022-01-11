@@ -5,9 +5,10 @@ set -euo pipefail
 
 NAMESPACE=${1:-sysdigcloud}
 LABELS=""
+CONTEXT=""
 LOG_DIR=$(mktemp -d sysdigcloud-support-bundle-XXXX)
 
-while getopts l:n:hced flag; do
+while getopts l:n:C:hced flag; do
   case "${flag}" in
     l) LABELS=${OPTARG:-};;
     n) NAMESPACE=${OPTARG:-sysdigcloud};;
@@ -17,10 +18,13 @@ while getopts l:n:hced flag; do
       echo "Example: ./get_support_bundle.sh -n sysdig -l api,collector,worker,cassandra,elasticsearch"; printf "\n"; 
       echo "Flags:"; printf "\n"
       echo "-n  Specify the Sysdig namespace. If not specified, "sysdigcloud" is assumed."; printf "\n";
+      echo "-C  Specify the kubectl context. If not set, the current context will be used."; printf "\n";
       echo "-c  Include Cassandra storage information"; printf "\n";
       echo "-e  Include Elasticsearch storage information"; printf "\n";
       echo "-d  Include container density information"; printf "\n";     
       exit;;
+
+    C) CONTEXT=${OPTARG:-};;
 
     c) echo "Fetching Cassandra storage info";
 
@@ -78,10 +82,14 @@ if [[ -z ${NAMESPACE} ]]; then
   NAMESPACE=sysdigcloud
 fi
 
+if [[ -z ${CONTEXT} ]]; then
+  CONTEXT=""
+fi
+
 #verify that the provided namespace exists
 kubectl get namespace ${NAMESPACE} > /dev/null
 
-KUBE_OPTS="--namespace ${NAMESPACE}"
+KUBE_OPTS="--namespace ${NAMESPACE} --context=${CONTEXT}"
 
 
 if [[ -z ${LABELS} ]]; then
@@ -89,6 +97,9 @@ if [[ -z ${LABELS} ]]; then
 else
   SYSDIGCLOUD_PODS=$(kubectl ${KUBE_OPTS} -l "role in (${LABELS})" get pods | awk '{ print $1 }' | grep -v NAME)
 fi
+
+echo "Using namespace ${NAMESPACE}";
+echo "Using context ${CONTEXT}";
 
 command='tar czf - /logs/ /opt/draios/ /var/log/sysdigcloud/ /var/log/cassandra/ /tmp/redis.log /var/log/redis-server/redis.log /var/log/mysql/error.log /opt/prod.conf 2>/dev/null || true'
 for pod in ${SYSDIGCLOUD_PODS}; do
