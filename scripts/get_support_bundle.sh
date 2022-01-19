@@ -124,7 +124,7 @@ printf "Pod#\tFilesystem\tSize\tUsed\tAvail\tUse\tMounted on\n" > ${LOG_DIR}/cas
 for pod in $(kubectl ${KUBE_OPTS} get pods -l role=cassandra -n ${NAMESPACE} | grep -v "NAME" | awk '{print $1}')
 do
     printf "$pod\t" > ${LOG_DIR}/cassandra_storage.log
-    kubectl ${KUBE_OPTS} exec -it $pod -n ${NAMESPACE} -- df -Ph | grep cassandra | grep -v "tmpfs" | awk '{printf "%-13s %10s %6s %8s %6s %s\n",$1,$2,$3,$4,$5,$6}' > ${LOG_DIR}/cassandra_storage.log
+    kubectl ${KUBE_OPTS} exec -it $pod -- df -Ph | grep cassandra | grep -v "tmpfs" | awk '{printf "%-13s %10s %6s %8s %6s %s\n",$1,$2,$3,$4,$5,$6}' > ${LOG_DIR}/cassandra_storage.log
 done
 for pod in $(kubectl get pods -l role=cassandra -n sysdig | grep -v "NAME" | awk '{print $1}');
 do
